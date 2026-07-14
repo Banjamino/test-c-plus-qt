@@ -1,0 +1,21 @@
+# Build output
+/build/
+/out/
+*.obj
+*.exe
+*.pdb
+# CMake
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
+# Coverage
+*.gcda
+*.gcno
+coverage/
+# Secrets — never commit
+.env
+*.pem
+*.key
+# IDE
+.vs/
+.vscode/

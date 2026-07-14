@@ -1,0 +1,18 @@
+# clang-tidy configuration (static-analysis layer).
+# Enables C++ Core Guidelines, CERT, bugprone, and performance checks. These
+# provide a documented, enforceable coding standard WITHOUT requiring MISRA.
+# If MISRA is later adopted, add a MISRA-capable tool rather than relying on
+# these (clang-tidy is MISRA-adjacent, not certified MISRA).
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  cppcoreguidelines-*,
+  performance-*,
+  portability-*,
+  readability-identifier-naming,
+  modernize-use-nullptr,
+  modernize-use-override
+WarningsAsErrors: ''
+HeaderFilterRegex: '.*'
+FormatStyle: file

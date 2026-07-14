@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+    tags: ['v*']
+  pull_request:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+jobs:
+  # --- Formatting gate (Clang-Format) --------------------------------------
+  format:
+    name: clang-format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check formatting
+        run: |
+          sudo apt-get update && sudo apt-get install -y clang-format
+          find src include tests -name '*.cpp' -o -name '*.hpp' \
+            | xargs clang-format --dry-run --Werror
+
+  # --- Build + unit tests (MSVC, the target toolchain) ---------------------
+  build-test-msvc:
+    name: build-test (MSVC / C++17)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1        # sets up MSVC (cl) environment
+      - name: Install Ninja
+        run: choco install ninja -y
+      - name: Configure
+        run: cmake --preset msvc-debug
+      - name: Build
+        run: cmake --build --preset msvc-debug
+      - name: Test (CTest)
+        run: ctest --preset msvc-debug
+
+  # --- QML linting gate (qmllint) ------------------------------------------
+  qml-lint:
+    name: qmllint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.0'
+      - name: Lint QML (strict)
+        run: |
+          # Clean QML must pass; broken fixtures in validation-fixtures/ are
+          # NOT linted here (they live outside qml/ by design).
+          qmllint --strict qml/*.qml
+
+  # --- Static analysis: clang-tidy + cppcheck (free layer) -----------------
+  static-analysis:
+    name: static-analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y clang-tidy cppcheck ninja-build clang
+      - name: Configure (export compile_commands.json)
+        run: cmake --preset ci-linux -DAPP_ENABLE_CLANG_TIDY=ON -DAPP_ENABLE_CPPCHECK=ON
+      - name: Build with analysis
+        run: cmake --build --preset ci-linux
+      - name: cppcheck (project-wide)
+        run: |
+          cppcheck --enable=warning,style,performance,portability \
+            --std=c++17 --error-exitcode=1 --inline-suppr \
+            -I include src
+
+  # --- Coverage (Linux/gcov; MSVC uses OpenCppCoverage separately) ---------
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build gcovr
+      - name: Configure with coverage
+        run: cmake --preset ci-linux -DAPP_ENABLE_COVERAGE=ON
+      - name: Build
+        run: cmake --build --preset ci-linux
+      - name: Run tests
+        run: ctest --preset ci-linux
+      - name: Coverage report + gate
+        run: |
+          # TODO: set --fail-under-line to your class target
+          #   Class C: 90 (line) ; Class B: 80 (line). Decide safety class first.
+          gcovr -r . --print-summary --fail-under-line 0 build/ci-linux
+
+  # --- SAST placeholder (MISRA / commercial tool slots in here) ------------
+  # sast:
+  #   name: sast
+  #   runs-on: [self-hosted]        # self-hosted keeps source internal
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Run SAST (Axivion / PVS-Studio / SonarQube)
+  #       run: echo "TODO: add chosen SAST tool when MISRA/commitment confirmed"
