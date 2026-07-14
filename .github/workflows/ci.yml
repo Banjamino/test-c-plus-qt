@@ -1,16 +1,53 @@
 name: CI
 
+# Trigger model:
+#   - Feature-branch pushes  -> FAST stages only (format, build+test, qmllint)
+#                               for quick developer feedback.
+#   - Pull requests          -> FULL suite (adds static-analysis, coverage, SAST).
+#                               This is the enforced merge gate (required checks).
+#   - Pushes to develop/main  -> FULL suite (integration point).
+#   - Tags (v*)              -> FULL suite (release).
+#
+# Rationale: fast signal on every push without paying for heavy analysis on
+# every intermediate commit; complete, enforced gate at the PR and at integration.
+
 on:
   push:
-    branches: [develop, release]
+    branches:
+      - '**'          # every branch push -> fast feedback
     tags: ['v*']
   pull_request:
-    branches: [develop, release]
+    branches: [develop, main]
 
 permissions:
   contents: read
 
 jobs:
+  # =========================================================================
+  # Gate flag: is this a "full suite" run (PR / develop / main / tag)?
+  # Feature-branch pushes evaluate this to false and skip the heavy jobs.
+  # =========================================================================
+  decide:
+    name: decide-scope
+    runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.flag.outputs.full }}
+    steps:
+      - id: flag
+        shell: bash
+        run: |
+          full=false
+          if [ "${{ github.event_name }}" = "pull_request" ]; then full=true; fi
+          if [ "${{ github.ref }}" = "refs/heads/develop" ]; then full=true; fi
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then full=true; fi
+          if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; then full=true; fi
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "Full suite: $full  (event=${{ github.event_name }}, ref=${{ github.ref }})"
+
+  # =========================================================================
+  # FAST stages — always run (feature-branch push, PR, develop/main, tag)
+  # =========================================================================
+
   # --- Formatting gate (Clang-Format) --------------------------------------
   format:
     name: clang-format
@@ -49,15 +86,25 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.7.0'
-      - name: Lint QML (strict)
+      - name: Lint QML
         run: |
+          # Qt6 qmllint is strict by default (no --strict flag; it was removed
+          # after Qt5). Echo the version for troubleshooting, then lint.
           # Clean QML must pass; broken fixtures in validation-fixtures/ are
           # NOT linted here (they live outside qml/ by design).
+          qmllint --version
           qmllint qml/*.qml
+
+  # =========================================================================
+  # FULL-suite stages — run only for PR / develop / main / tag
+  # (skipped on plain feature-branch pushes via `needs: decide` + if:)
+  # =========================================================================
 
   # --- Static analysis: clang-tidy + cppcheck (free layer) -----------------
   static-analysis:
     name: static-analysis
+    needs: decide
+    if: needs.decide.outputs.full == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -76,6 +123,8 @@ jobs:
   # --- Coverage (Linux/gcov; MSVC uses OpenCppCoverage separately) ---------
   coverage:
     name: coverage
+    needs: decide
+    if: needs.decide.outputs.full == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -94,10 +143,14 @@ jobs:
           gcovr -r . --print-summary --fail-under-line 0 build/ci-linux
 
   # --- SAST placeholder (MISRA / commercial tool slots in here) ------------
+  #     Only meaningful on the full suite; keep the same needs/if guard.
   # sast:
   #   name: sast
+  #   needs: decide
+  #   if: needs.decide.outputs.full == 'true'
   #   runs-on: [self-hosted]        # self-hosted keeps source internal
   #   steps:
   #     - uses: actions/checkout@v4
-  #     - name: Run SAST (Axivion / PVS-Studio / SonarQube)
+  #     - name: Run SAST (Cppcheck Premium / Axivion / SonarQube)
   #       run: echo "TODO: add chosen SAST tool when MISRA/commitment confirmed"
+
