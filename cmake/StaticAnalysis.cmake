@@ -37,8 +37,10 @@ function(app_enable_static_analysis target)
 
     # --- coverage (GCC/Clang only; MSVC uses OpenCppCoverage externally) ----
     if(APP_ENABLE_COVERAGE AND NOT MSVC)
-        target_compile_options(${target} PRIVATE --coverage -O0 -g)
-        target_link_options(${target} PRIVATE --coverage)
+        # PUBLIC so consumers (app, tests) inherit both the instrumentation
+        # and the gcov runtime link requirement.
+        target_compile_options(${target} PUBLIC --coverage -O0 -g)
+        target_link_options(${target} PUBLIC --coverage)
         message(STATUS "coverage instrumentation enabled for ${target}")
     endif()
 endfunction()

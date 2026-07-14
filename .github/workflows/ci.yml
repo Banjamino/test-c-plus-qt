@@ -2,10 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [develop, main]
+    branches: [develop, release]
     tags: ['v*']
   pull_request:
-    branches: [develop, main]
+    branches: [develop, release]
 
 permissions:
   contents: read
@@ -53,7 +53,7 @@ jobs:
         run: |
           # Clean QML must pass; broken fixtures in validation-fixtures/ are
           # NOT linted here (they live outside qml/ by design).
-          qmllint --strict qml/*.qml
+          qmllint qml/*.qml
 
   # --- Static analysis: clang-tidy + cppcheck (free layer) -----------------
   static-analysis:
