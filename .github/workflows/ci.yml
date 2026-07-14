@@ -120,27 +120,70 @@ jobs:
             --std=c++17 --error-exitcode=1 --inline-suppr \
             -I include src
 
-  # --- Coverage (Linux/gcov; MSVC uses OpenCppCoverage separately) ---------
+  # --- Coverage (Windows / MSVC via OpenCppCoverage) -----------------------
+  #     Runs on the SAME toolchain the product ships on (MSVC/Windows), so the
+  #     coverage evidence reflects the real build (SOP-011 §5.7). OpenCppCoverage
+  #     instruments the built test binary at runtime — NO special build flags,
+  #     so the standard msvc-debug build is used unchanged.
   coverage:
-    name: coverage
+    name: coverage (MSVC / OpenCppCoverage)
     needs: decide
     if: needs.decide.outputs.full == 'true'
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
+    env:
+      # Coverage gate. Set to your safety-class target once decided:
+      #   Class C -> 90   |   Class B -> 80   |   (placeholder 0 = report only)
+      COVERAGE_MIN_LINE: '0'
     steps:
       - uses: actions/checkout@v4
-      - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y ninja-build gcovr
-      - name: Configure with coverage
-        run: cmake --preset ci-linux -DAPP_ENABLE_COVERAGE=ON
-      - name: Build
-        run: cmake --build --preset ci-linux
-      - name: Run tests
-        run: ctest --preset ci-linux
-      - name: Coverage report + gate
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Install Ninja
+        run: choco install ninja -y
+      - name: Install OpenCppCoverage
+        run: choco install opencppcoverage -y
+      - name: Configure + build (standard MSVC debug build)
         run: |
-          # TODO: set --fail-under-line to your class target
-          #   Class C: 90 (line) ; Class B: 80 (line). Decide safety class first.
-          gcovr -r . --print-summary --fail-under-line 0 build/ci-linux
+          cmake --preset msvc-debug
+          cmake --build --preset msvc-debug
+      - name: Run tests under OpenCppCoverage
+        shell: pwsh
+        run: |
+          # Add OpenCppCoverage to PATH (choco installs under Program Files).
+          $env:PATH += ";C:\Program Files\OpenCppCoverage"
+          # --sources limits coverage accounting to OUR code (src/ and include/),
+          #   excluding system headers, Qt, and test framework noise.
+          # --modules restricts to our built binaries.
+          # --cover_children lets it follow the test process.
+          # Produces Cobertura XML (for gate parsing) and an HTML report.
+          OpenCppCoverage.exe `
+            --sources src `
+            --sources include `
+            --modules build\msvc-debug `
+            --export_type cobertura:coverage.xml `
+            --export_type html:coverage-html `
+            --cover_children `
+            -- ctest --preset msvc-debug
+      - name: Coverage gate
+        shell: pwsh
+        run: |
+          # Parse line-rate from the Cobertura XML and fail if below the target.
+          [xml]$cov = Get-Content coverage.xml
+          $rate = [double]$cov.coverage.'line-rate'
+          $pct  = [math]::Round($rate * 100, 2)
+          $min  = [double]$env:COVERAGE_MIN_LINE
+          Write-Host "Line coverage: $pct%  (minimum required: $min%)"
+          if ($pct -lt $min) {
+            Write-Error "Coverage $pct% is below the required $min%"
+            exit 1
+          }
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            coverage-html
 
   # --- SAST placeholder (MISRA / commercial tool slots in here) ------------
   #     Only meaningful on the full suite; keep the same needs/if guard.
@@ -153,4 +196,3 @@ jobs:
   #     - uses: actions/checkout@v4
   #     - name: Run SAST (Cppcheck Premium / Axivion / SonarQube)
   #       run: echo "TODO: add chosen SAST tool when MISRA/commitment confirmed"
-
