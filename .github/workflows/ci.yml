@@ -1,8 +1,20 @@
 name: CI
 
+# Trigger model:
+#   - Feature-branch pushes  -> FAST stages only (format, build+test, qmllint)
+#                               for quick developer feedback.
+#   - Pull requests          -> FULL suite (adds static-analysis, coverage, SAST).
+#                               This is the enforced merge gate (required checks).
+#   - Pushes to develop/main  -> FULL suite (integration point).
+#   - Tags (v*)              -> FULL suite (release).
+#
+# Rationale: fast signal on every push without paying for heavy analysis on
+# every intermediate commit; complete, enforced gate at the PR and at integration.
+
 on:
   push:
-    branches: [develop, main]
+    branches:
+      - '**'          # every branch push -> fast feedback
     tags: ['v*']
   pull_request:
     branches: [develop, main]
@@ -11,6 +23,31 @@ permissions:
   contents: read
 
 jobs:
+  # =========================================================================
+  # Gate flag: is this a "full suite" run (PR / develop / main / tag)?
+  # Feature-branch pushes evaluate this to false and skip the heavy jobs.
+  # =========================================================================
+  decide:
+    name: decide-scope
+    runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.flag.outputs.full }}
+    steps:
+      - id: flag
+        shell: bash
+        run: |
+          full=false
+          if [ "${{ github.event_name }}" = "pull_request" ]; then full=true; fi
+          if [ "${{ github.ref }}" = "refs/heads/develop" ]; then full=true; fi
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then full=true; fi
+          if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; then full=true; fi
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "Full suite: $full  (event=${{ github.event_name }}, ref=${{ github.ref }})"
+
+  # =========================================================================
+  # FAST stages — always run (feature-branch push, PR, develop/main, tag)
+  # =========================================================================
+
   # --- Formatting gate (Clang-Format) --------------------------------------
   format:
     name: clang-format
@@ -49,15 +86,25 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.7.0'
-      - name: Lint QML (strict)
+      - name: Lint QML
         run: |
+          # Qt6 qmllint is strict by default (no --strict flag; it was removed
+          # after Qt5). Echo the version for troubleshooting, then lint.
           # Clean QML must pass; broken fixtures in validation-fixtures/ are
           # NOT linted here (they live outside qml/ by design).
-          qmllint --strict qml/*.qml
+          qmllint --version
+          qmllint qml/*.qml
+
+  # =========================================================================
+  # FULL-suite stages — run only for PR / develop / main / tag
+  # (skipped on plain feature-branch pushes via `needs: decide` + if:)
+  # =========================================================================
 
   # --- Static analysis: clang-tidy + cppcheck (free layer) -----------------
   static-analysis:
     name: static-analysis
+    needs: decide
+    if: needs.decide.outputs.full == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -73,31 +120,79 @@ jobs:
             --std=c++17 --error-exitcode=1 --inline-suppr \
             -I include src
 
-  # --- Coverage (Linux/gcov; MSVC uses OpenCppCoverage separately) ---------
+  # --- Coverage (Windows / MSVC via OpenCppCoverage) -----------------------
+  #     Runs on the SAME toolchain the product ships on (MSVC/Windows), so the
+  #     coverage evidence reflects the real build (SOP-011 §5.7). OpenCppCoverage
+  #     instruments the built test binary at runtime — NO special build flags,
+  #     so the standard msvc-debug build is used unchanged.
   coverage:
-    name: coverage
-    runs-on: ubuntu-latest
+    name: coverage (MSVC / OpenCppCoverage)
+    needs: decide
+    if: needs.decide.outputs.full == 'true'
+    runs-on: windows-latest
+    env:
+      # Coverage gate. Set to your safety-class target once decided:
+      #   Class C -> 90   |   Class B -> 80   |   (placeholder 0 = report only)
+      COVERAGE_MIN_LINE: '0'
     steps:
       - uses: actions/checkout@v4
-      - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y ninja-build gcovr
-      - name: Configure with coverage
-        run: cmake --preset ci-linux -DAPP_ENABLE_COVERAGE=ON
-      - name: Build
-        run: cmake --build --preset ci-linux
-      - name: Run tests
-        run: ctest --preset ci-linux
-      - name: Coverage report + gate
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Install Ninja
+        run: choco install ninja -y
+      - name: Install OpenCppCoverage
+        run: choco install opencppcoverage -y
+      - name: Configure + build (standard MSVC debug build)
         run: |
-          # TODO: set --fail-under-line to your class target
-          #   Class C: 90 (line) ; Class B: 80 (line). Decide safety class first.
-          gcovr -r . --print-summary --fail-under-line 0 build/ci-linux
+          cmake --preset msvc-debug
+          cmake --build --preset msvc-debug
+      - name: Run tests under OpenCppCoverage
+        shell: pwsh
+        run: |
+          # Add OpenCppCoverage to PATH (choco installs under Program Files).
+          $env:PATH += ";C:\Program Files\OpenCppCoverage"
+          # --sources limits coverage accounting to OUR code (src/ and include/),
+          #   excluding system headers, Qt, and test framework noise.
+          # --modules restricts to our built binaries.
+          # --cover_children lets it follow the test process.
+          # Produces Cobertura XML (for gate parsing) and an HTML report.
+          OpenCppCoverage.exe `
+            --sources src `
+            --sources include `
+            --modules build\msvc-debug `
+            --export_type cobertura:coverage.xml `
+            --export_type html:coverage-html `
+            --cover_children `
+            -- ctest --preset msvc-debug
+      - name: Coverage gate
+        shell: pwsh
+        run: |
+          # Parse line-rate from the Cobertura XML and fail if below the target.
+          [xml]$cov = Get-Content coverage.xml
+          $rate = [double]$cov.coverage.'line-rate'
+          $pct  = [math]::Round($rate * 100, 2)
+          $min  = [double]$env:COVERAGE_MIN_LINE
+          Write-Host "Line coverage: $pct%  (minimum required: $min%)"
+          if ($pct -lt $min) {
+            Write-Error "Coverage $pct% is below the required $min%"
+            exit 1
+          }
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            coverage-html
 
   # --- SAST placeholder (MISRA / commercial tool slots in here) ------------
+  #     Only meaningful on the full suite; keep the same needs/if guard.
   # sast:
   #   name: sast
+  #   needs: decide
+  #   if: needs.decide.outputs.full == 'true'
   #   runs-on: [self-hosted]        # self-hosted keeps source internal
   #   steps:
   #     - uses: actions/checkout@v4
-  #     - name: Run SAST (Axivion / PVS-Studio / SonarQube)
+  #     - name: Run SAST (Cppcheck Premium / Axivion / SonarQube)
   #       run: echo "TODO: add chosen SAST tool when MISRA/commitment confirmed"
