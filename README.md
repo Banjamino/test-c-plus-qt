@@ -1,4 +1,4 @@
-# app — C++ skeletons
+## app — C++ skeletons
 
 Minimal, buildable C++17 skeleton for the CortiSci application, set up for
 PR-based development with build / unit-test / static-analysis / coverage checks.
