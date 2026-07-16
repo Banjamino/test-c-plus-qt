@@ -3,7 +3,7 @@
 Minimal, buildable C++17 skeleton for the CortiSci application, set up for
 PR-based development with build / unit-test / static-analysis / coverage checks.
 
-## Decisions baked in
+####### Decisions baked in
 - **C++17**, no compiler extensions, standard required.
 - **MSVC** target toolchain (CMake preset `msvc-debug`); also builds with GCC/Clang.
 - **CMake + Ninja** build; `compile_commands.json` exported for analysis tools.
