@@ -1,4 +1,4 @@
-# app — C++ skeleton
+## app — C++ skeletons
 
 Minimal, buildable C++17 skeleton for the CortiSci application, set up for
 PR-based development with build / unit-test / static-analysis / coverage checks.
@@ -10,7 +10,7 @@ PR-based development with build / unit-test / static-analysis / coverage checks.
 - **Warnings-as-errors** on (SOP-011 §5.4: no warnings in production code).
 - **CTest** unit tests, passing from the first commit.
 
-## MISRA C++:2023 — deliberately NOT enforced yet
+### MISRA C++:2023 — deliberately NOT enforced yet
 MISRA is **not required** by the SOPs or IEC 62304 (the term appears in neither).
 This skeleton uses a documented, free-enforceable coding standard instead
 (C++ Core Guidelines + CERT via `.clang-tidy`). If a MISRA commitment is later
